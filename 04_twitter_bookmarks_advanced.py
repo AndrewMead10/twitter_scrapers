@@ -80,21 +80,36 @@ class TwitterAuth:
             )
             for char in self.username:
                 username_input.send_keys(char)
-                time.sleep(random.uniform(0.05, 0.15))
-            time.sleep(random.uniform(0.5, 1.5))
+                # More realistic typing speed with occasional pauses
+                if random.random() < 0.1:  # 10% chance of a slightly longer pause
+                    time.sleep(random.uniform(0.2, 0.4))
+                else:
+                    time.sleep(random.uniform(0.08, 0.18))
+                # Occasionally simulate backspace/correction (5% chance)
+                if random.random() < 0.05 and len(self.username) > 1:
+                    time.sleep(random.uniform(0.1, 0.3))
+                    username_input.send_keys(Keys.BACKSPACE)
+                    time.sleep(random.uniform(0.05, 0.15))
+                    username_input.send_keys(char)
+            time.sleep(random.uniform(0.8, 2.0))
             username_input.send_keys(Keys.RETURN)
-            time.sleep(random.uniform(2, 4))
-            
+            time.sleep(random.uniform(2.5, 5.0))
+
             # Password
             password_input = WebDriverWait(self.driver, 15).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, 'input[name="password"]'))
             )
             for char in self.password:
                 password_input.send_keys(char)
-                time.sleep(random.uniform(0.05, 0.15))
-            time.sleep(random.uniform(0.5, 1.5))
+                # Similar realistic typing patterns for password
+                if random.random() < 0.1:  # 10% chance of a slightly longer pause
+                    time.sleep(random.uniform(0.15, 0.35))
+                else:
+                    time.sleep(random.uniform(0.06, 0.16))
+                # Password typing is usually more deliberate, fewer corrections
+            time.sleep(random.uniform(0.6, 1.8))
             password_input.send_keys(Keys.RETURN)
-            time.sleep(random.uniform(3, 6))
+            time.sleep(random.uniform(3.5, 7.0))
             
             # Verify login
             try:
