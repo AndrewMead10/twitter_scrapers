@@ -493,6 +493,12 @@ class DatabaseManager:
         rows = cursor.fetchall()
         return [dict(row) for row in rows]
     
+    def get_existing_bookmark_ids(self) -> set:
+        """Get all tweet IDs that are already bookmarked in the database"""
+        cursor = self.conn.cursor()
+        cursor.execute('SELECT tweet_id FROM bookmarks')
+        return {row['tweet_id'] for row in cursor.fetchall()}
+
     def close(self):
         if self.conn:
             self.conn.close()
@@ -626,17 +632,29 @@ class TwitterBookmarksScraper:
             time.sleep(wait_seconds)
             return False
 
-    def scrape_bookmarks(self, max_scrolls: int = 100) -> List[Dict[str, Any]]:
-        """Scrape all bookmarks"""
+    def scrape_bookmarks(self, max_scrolls: int = 100,
+                         existing_threshold: int = 5) -> List[Dict[str, Any]]:
+        """Scrape all bookmarks
+
+        Args:
+            max_scrolls: Maximum number of viewport scrolls
+            existing_threshold: Number of consecutive existing tweets before stopping
+        """
         Logger.info("Starting bookmark extraction...")
+
+        # Load existing bookmarks from database to detect when to stop
+        existing_ids = self.db.get_existing_bookmark_ids()
+        if existing_ids:
+            Logger.info(f"Found {len(existing_ids)} existing bookmarks in database")
+        consecutive_existing = 0
 
         self.driver.get("https://twitter.com/i/bookmarks")
         time.sleep(5)
         self._prime_bookmarks_feed()
-        
+
         scroll_count = 0
         no_new_count = 0
-        
+
         while scroll_count < max_scrolls and no_new_count < 3:
             scroll_count += 1
             print(f"\n📜 Scroll {scroll_count}/{max_scrolls}")
@@ -649,11 +667,24 @@ class TwitterBookmarksScraper:
                     parsed = self.parser.parse(elem)
                     if not parsed or parsed['tweet_id'] in self.seen_ids:
                         continue
-                    
+
+                    # Check if this tweet is already in the database
+                    if parsed['tweet_id'] in existing_ids:
+                        consecutive_existing += 1
+                        Logger.info(f"Found existing bookmark ({consecutive_existing}/{existing_threshold}): {parsed['tweet_id']}")
+                        self.seen_ids.add(parsed['tweet_id'])  # Don't re-process
+                        if consecutive_existing >= existing_threshold:
+                            Logger.success(f"Reached {existing_threshold} consecutive existing bookmarks - stopping to avoid redundant work")
+                            return self.bookmarks
+                        continue
+
+                    # Reset counter when we find a new bookmark
+                    consecutive_existing = 0
+
                     self.seen_ids.add(parsed['tweet_id'])
                     self.bookmarks.append(parsed)
                     new_count += 1
-                    
+
                     # Save to database
                     self.db.save_user(parsed)
                     
