@@ -11,7 +11,7 @@
 
 """
 Twitter Bookmarks Scraper - Clean Architecture
-Modular design for extracting bookmarks with complete thread support
+Modular design for extracting bookmarks from Twitter
 """
 
 import os
@@ -21,7 +21,6 @@ import time
 import random
 import sqlite3
 import ssl
-import re
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional
@@ -210,155 +209,6 @@ class TweetParser:
             return None
 
 
-class ThreadExtractor:
-    """Extracts complete conversation threads"""
-    
-    def __init__(self, driver, parser: TweetParser, *, max_scrolls: int = 40,
-                 max_tweets: int = 30):
-        self.driver = driver
-        self.parser = parser
-        self.max_scrolls = max_scrolls
-        self.max_tweets = max_tweets
-    
-    def extract_complete_thread(self, tweet_data: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """
-        Extract complete thread by navigating to tweet and scrolling slowly
-        Returns: List of all tweets in the thread (sorted by timestamp)
-        """
-        if not tweet_data.get('is_reply') or not tweet_data.get('tweet_id'):
-            return []
-        
-        try:
-            current_url = self.driver.current_url
-            original_window = self.driver.current_window_handle
-            thread_window = None
-            tweet_id = tweet_data['tweet_id']
-            
-            Logger.info(f"Extracting thread for tweet {tweet_id}...")
-            
-            # Navigate to tweet in a temporary tab when possible to avoid losing scroll position
-            tweet_url = f"https://twitter.com/i/web/status/{tweet_id}"
-            try:
-                self.driver.switch_to.new_window('tab')
-                thread_window = self.driver.current_window_handle
-            except Exception:
-                try:
-                    existing_handles = set(self.driver.window_handles)
-                    self.driver.execute_script("window.open('about:blank','_blank');")
-                    WebDriverWait(self.driver, 5).until(
-                        lambda d: len(d.window_handles) > len(existing_handles)
-                    )
-                    new_handles = [h for h in self.driver.window_handles if h not in existing_handles]
-                    if new_handles:
-                        thread_window = new_handles[0]
-                        self.driver.switch_to.window(thread_window)
-                except Exception:
-                    thread_window = None
-                    self.driver.switch_to.window(original_window)
-            
-            self.driver.get(tweet_url)
-            time.sleep(5)
-            
-            # Scroll to very top
-            print("      ⬆️  Scrolling to top...")
-            for _ in range(20):
-                self.driver.execute_script("window.scrollTo(0, 0);")
-                time.sleep(0.3)
-            time.sleep(3)
-            
-            # Slow scroll and extract
-            print("      📜 Extracting tweets...")
-            seen_ids = set()
-            all_tweets = []
-            scroll_count = 0
-            no_new_count = 0
-            target_found = False
-            
-            while scroll_count < self.max_scrolls and no_new_count < 8:
-                elements = self.driver.find_elements(By.CSS_SELECTOR, 'article[data-testid="tweet"]')
-                
-                new_count = 0
-                for elem in elements:
-                    try:
-                        # Force render
-                        self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", elem)
-                        time.sleep(0.2)
-                        
-                        parsed = self.parser.parse(elem)
-                        if not parsed or not parsed.get('tweet_id'):
-                            continue
-                        if parsed['tweet_id'] in seen_ids:
-                            continue
-                        seen_ids.add(parsed['tweet_id'])
-                        all_tweets.append(parsed)
-                        new_count += 1
-                        
-                        text = parsed.get('text', '')
-                        num = re.match(r'^(\d+)\.', text)
-                        preview = f"#{num.group(1)}" if num else text[:30]
-                        print(f"         ✓ {preview}")
-                        if parsed['tweet_id'] == tweet_id:
-                            target_found = True
-                            break
-                    except:
-                        continue
-                
-                if new_count > 0:
-                    no_new_count = 0
-                else:
-                    no_new_count += 1
-                
-                if len(all_tweets) >= self.max_tweets:
-                    Logger.info("Reached max tweets for thread; stopping to avoid infinite scroll")
-                    break
-                if target_found:
-                    Logger.info("Encountered bookmarked tweet; stopping thread crawl")
-                    break
-                
-                # Tiny scroll
-                self.driver.execute_script("window.scrollBy(0, 150);")
-                time.sleep(1.5)
-                
-                # Trigger every 5 scrolls
-                if scroll_count % 5 == 0:
-                    self.driver.execute_script("window.scrollBy(0, -100);")
-                    time.sleep(0.5)
-                    self.driver.execute_script("window.scrollBy(0, 100);")
-                    time.sleep(1)
-                
-                scroll_count += 1
-            
-            # Sort by timestamp
-            all_tweets.sort(key=lambda t: t.get('timestamp') or '')
-            
-            if all_tweets:
-                Logger.success(f"Extracted {len(all_tweets)} tweets from thread")
-                # Update parent_tweet_id to root
-                root_id = all_tweets[0]['tweet_id']
-                tweet_data['parent_tweet_id'] = root_id
-            
-            # Return to bookmarks
-            if thread_window:
-                self.driver.close()
-                self.driver.switch_to.window(original_window)
-            else:
-                self.driver.get(current_url)
-                time.sleep(2)
-            
-            return all_tweets
-            
-        except Exception as e:
-            Logger.error(f"Thread extraction failed: {str(e)}")
-            try:
-                if thread_window and thread_window in self.driver.window_handles:
-                    self.driver.close()
-                    self.driver.switch_to.window(original_window)
-                else:
-                    self.driver.get(current_url)
-                    time.sleep(2)
-            except Exception:
-                pass
-            return []
 
 
 class DatabaseManager:
@@ -399,9 +249,7 @@ class DatabaseManager:
                 has_media BOOLEAN,
                 media_type TEXT,
                 is_reply BOOLEAN,
-                parent_tweet_id TEXT,
-                FOREIGN KEY (user_id) REFERENCES users(user_id),
-                FOREIGN KEY (parent_tweet_id) REFERENCES tweets(tweet_id)
+                FOREIGN KEY (user_id) REFERENCES users(user_id)
             )
         ''')
         
@@ -414,7 +262,6 @@ class DatabaseManager:
             )
         ''')
         
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_parent ON tweets(parent_tweet_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_timestamp ON tweets(timestamp)')
         
         self.conn.commit()
@@ -436,14 +283,14 @@ class DatabaseManager:
         """Save tweet to database"""
         if not tweet_data.get('tweet_id'):
             return
-        
+
         cursor = self.conn.cursor()
         cursor.execute('''
             INSERT OR REPLACE INTO tweets (
                 tweet_id, user_id, text, timestamp, url,
                 replies_count, retweets_count, likes_count,
-                has_media, media_type, is_reply, parent_tweet_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                has_media, media_type, is_reply
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             tweet_data['tweet_id'],
             tweet_data.get('user_id'),
@@ -455,44 +302,15 @@ class DatabaseManager:
             tweet_data.get('likes_count', 0),
             tweet_data.get('has_media', False),
             tweet_data.get('media_type', 'none'),
-            tweet_data.get('is_reply', False),
-            tweet_data.get('parent_tweet_id')
+            tweet_data.get('is_reply', False)
         ))
-        
+
         if is_bookmarked:
-            cursor.execute('INSERT OR IGNORE INTO bookmarks (tweet_id) VALUES (?)', 
+            cursor.execute('INSERT OR IGNORE INTO bookmarks (tweet_id) VALUES (?)',
                           (tweet_data['tweet_id'],))
-        
+
         self.conn.commit()
-    
-    def get_thread_from_db(self, tweet_id: str) -> List[Dict[str, Any]]:
-        """Get complete thread from database using recursive query"""
-        cursor = self.conn.cursor()
-        
-        # Find root
-        root_id = tweet_id
-        for _ in range(20):
-            cursor.execute('SELECT parent_tweet_id FROM tweets WHERE tweet_id = ?', (root_id,))
-            result = cursor.fetchone()
-            if result and result['parent_tweet_id']:
-                root_id = result['parent_tweet_id']
-            else:
-                break
-        
-        # Get all tweets in thread
-        cursor.execute('''
-            WITH RECURSIVE thread AS (
-                SELECT * FROM tweets WHERE tweet_id = ?
-                UNION ALL
-                SELECT t.* FROM tweets t 
-                JOIN thread th ON t.parent_tweet_id = th.tweet_id
-            )
-            SELECT * FROM thread ORDER BY timestamp ASC
-        ''', (root_id,))
-        
-        rows = cursor.fetchall()
-        return [dict(row) for row in rows]
-    
+
     def get_existing_bookmark_ids(self) -> set:
         """Get all tweet IDs that are already bookmarked in the database"""
         cursor = self.conn.cursor()
@@ -519,44 +337,37 @@ class Exporter:
         return path
     
     def to_individual_files(self, db: DatabaseManager, timestamp: str) -> Path:
-        """Create individual JSON file for each bookmark with complete thread"""
+        """Create individual JSON file for each bookmark"""
         output_dir = self.output_dir / f'individual_bookmarks_{timestamp}'
         output_dir.mkdir(parents=True, exist_ok=True)
-        
+
         cursor = db.conn.cursor()
         cursor.execute('SELECT tweet_id, user_id FROM bookmarks JOIN tweets USING(tweet_id)')
         bookmarks = cursor.fetchall()
-        
+
         Logger.info(f"Creating {len(bookmarks)} individual files...")
-        
+
         for bookmark in bookmarks:
             tweet_id = bookmark['tweet_id']
             user_id = bookmark['user_id']
-            
+
             # Get bookmarked tweet
             cursor.execute('SELECT * FROM tweets WHERE tweet_id = ?', (tweet_id,))
             tweet = dict(cursor.fetchone())
-            
-            # Get complete thread
-            thread = db.get_thread_from_db(tweet_id)
-            
+
             structure = {
                 "bookmarked_tweet": tweet,
-                "is_part_of_thread": len(thread) > 1,
-                "thread": thread,
-                "conversation_root": thread[0]['tweet_id'] if thread else tweet_id,
                 "metadata": {
-                    "total_tweets_in_thread": len(thread),
                     "bookmarked_at": datetime.now().isoformat()
                 }
             }
-            
+
             filename = f"{tweet_id}_{user_id}.json"
             with open(output_dir / filename, 'w', encoding='utf-8') as f:
                 json.dump(structure, f, indent=2, ensure_ascii=False)
-            
-            print(f"   ✓ {filename} ({len(thread)} tweets)")
-        
+
+            print(f"   ✓ {filename}")
+
         Logger.success(f"Individual files saved to: {output_dir.name}/")
         return output_dir
 
@@ -585,7 +396,7 @@ class TwitterBookmarksScraper:
 
         # Try to detect Chrome version or use a compatible version
         try:
-            self.driver = uc.Chrome(options=options, version_main=129)  # Match your Chrome version
+            self.driver = uc.Chrome(options=options, version_main=140)  # Match your Chrome version
         except Exception as e:
             Logger.warning(f"Failed with version 129: {e}")
             try:
@@ -655,7 +466,7 @@ class TwitterBookmarksScraper:
         scroll_count = 0
         no_new_count = 0
 
-        while scroll_count < max_scrolls and no_new_count < 3:
+        while scroll_count < max_scrolls and no_new_count < 10:
             scroll_count += 1
             print(f"\n📜 Scroll {scroll_count}/{max_scrolls}")
             
@@ -687,30 +498,11 @@ class TwitterBookmarksScraper:
 
                     # Save to database
                     self.db.save_user(parsed)
-                    
-                    # Extract thread if reply
-                    if parsed.get('is_reply'):
-                        extractor = ThreadExtractor(self.driver, self.parser)
-                        thread_tweets = extractor.extract_complete_thread(parsed)
-                        
-                        if thread_tweets:
-                            # Link all to root
-                            root_id = thread_tweets[0]['tweet_id']
-                            print(f"      🔗 Linking {len(thread_tweets)} tweets to root")
-                            
-                            for i, tt in enumerate(thread_tweets):
-                                self.db.save_user(tt)
-                                # Set parent_tweet_id for non-root tweets
-                                if i > 0 and not tt.get('parent_tweet_id'):
-                                    tt['parent_tweet_id'] = root_id
-                                self.db.save_tweet(tt, is_bookmarked=False)
-                    
-                    # Save bookmarked tweet
                     self.db.save_tweet(parsed, is_bookmarked=True)
-                    
+
                     preview = parsed.get('text', '')[:50]
                     print(f"   ✓ [{len(self.bookmarks)}] {preview}...")
-                    
+
                 except Exception as e:
                     continue
             
@@ -758,7 +550,7 @@ class TwitterBookmarksScraper:
                 return
             
             # Scrape
-            self.scrape_bookmarks(max_scrolls=1000)
+            self.scrape_bookmarks(max_scrolls=100000)
             
             # Export
             if self.bookmarks:
