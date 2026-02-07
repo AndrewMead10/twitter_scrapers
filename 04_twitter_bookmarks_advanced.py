@@ -538,7 +538,8 @@ class TwitterBookmarksScraper:
                 print(f"📁 Output: {self.output_dir}")
                 print("="*60)
             
-            input("\nPress Enter to close...")
+            if sys.stdin.isatty():
+                input("\nPress Enter to close...")
             
         except KeyboardInterrupt:
             Logger.warning("Interrupted by user")

@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bookmarks Search</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #0a0a0a;
+    color: #e7e9ea;
+    min-height: 100vh;
+    padding: 2rem 1rem;
+  }
+
+  .container { max-width: 640px; margin: 0 auto; }
+
+  h1 {
+    font-size: 1.5rem;
+    margin-bottom: 1.5rem;
+    color: #e7e9ea;
+  }
+
+  .search-box {
+    position: relative;
+    margin-bottom: 1.5rem;
+  }
+
+  .search-box input {
+    width: 100%;
+    padding: 0.75rem 1rem;
+    font-size: 1rem;
+    border: 1px solid #333;
+    border-radius: 9999px;
+    background: #16181c;
+    color: #e7e9ea;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+
+  .search-box input:focus { border-color: #1d9bf0; }
+  .search-box input::placeholder { color: #71767b; }
+
+  .status {
+    text-align: center;
+    color: #71767b;
+    padding: 2rem 0;
+    font-size: 0.9rem;
+  }
+
+  .results { display: flex; flex-direction: column; gap: 0.5rem; }
+
+  .card {
+    background: #16181c;
+    border: 1px solid #2f3336;
+    border-radius: 12px;
+    padding: 1rem;
+    transition: background 0.15s;
+  }
+
+  .card:hover { background: #1d1f23; }
+
+  .card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5rem;
+  }
+
+  .card-user {
+    font-weight: 700;
+    font-size: 0.95rem;
+  }
+
+  .card-username {
+    color: #71767b;
+    font-weight: 400;
+  }
+
+  .card-time {
+    color: #71767b;
+    font-size: 0.8rem;
+    white-space: nowrap;
+  }
+
+  .card-text {
+    font-size: 0.95rem;
+    line-height: 1.45;
+    margin-bottom: 0.75rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .card-footer {
+    display: flex;
+    gap: 1rem;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  .stat {
+    color: #71767b;
+    font-size: 0.8rem;
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+  }
+
+  .badge {
+    background: #1d9bf0;
+    color: #fff;
+    font-size: 0.7rem;
+    padding: 0.15rem 0.5rem;
+    border-radius: 9999px;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+
+  .card-link {
+    margin-left: auto;
+  }
+
+  .card-link a {
+    color: #1d9bf0;
+    text-decoration: none;
+    font-size: 0.8rem;
+  }
+
+  .card-link a:hover { text-decoration: underline; }
+
+  @media (max-width: 480px) {
+    body { padding: 1rem 0.5rem; }
+    h1 { font-size: 1.25rem; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Bookmarks Search</h1>
+  <div class="search-box">
+    <input type="text" id="search" placeholder="Search bookmarks..." autofocus>
+  </div>
+  <div id="status" class="status">Type to search your bookmarks</div>
+  <div id="results" class="results"></div>
+</div>
+
+<script>
+const CONFIG = {
+  PROJECT_ID: "019c3671-5951-76ab-87fd-ba0e6045c63c",
+  API_KEY: "proj_C5SpRIwyUzHJuWLqF1oYbeDVabJqaYic2p5Ub6KS0",
+};
+
+const API_URL = `https://retriever.sh/api/rag/projects/${CONFIG.PROJECT_ID}/query`;
+
+const searchInput = document.getElementById("search");
+const statusEl = document.getElementById("status");
+const resultsEl = document.getElementById("results");
+
+let debounceTimer = null;
+
+searchInput.addEventListener("input", () => {
+  clearTimeout(debounceTimer);
+  const q = searchInput.value.trim();
+  if (!q) {
+    resultsEl.innerHTML = "";
+    statusEl.style.display = "";
+    statusEl.textContent = "Type to search your bookmarks";
+    return;
+  }
+  statusEl.style.display = "";
+  statusEl.textContent = "Searching...";
+  debounceTimer = setTimeout(() => doSearch(q), 300);
+});
+
+async function doSearch(query) {
+  try {
+    const resp = await fetch(API_URL, {
+      method: "POST",
+      headers: {
+        "X-Project-Key": CONFIG.API_KEY,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ query, top_k: 20, vector_k: 40 }),
+    });
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${resp.status}`);
+    }
+
+    const data = await resp.json();
+    renderResults(data.results || []);
+  } catch (err) {
+    statusEl.style.display = "";
+    statusEl.textContent = `Error: ${err.message}`;
+    resultsEl.innerHTML = "";
+  }
+}
+
+function renderResults(results) {
+  if (!results.length) {
+    statusEl.style.display = "";
+    statusEl.textContent = "No results found";
+    resultsEl.innerHTML = "";
+    return;
+  }
+
+  statusEl.style.display = "none";
+  resultsEl.innerHTML = results.map(r => {
+    const m = r.metadata || {};
+    const date = m.timestamp ? new Date(m.timestamp).toLocaleDateString("en-US", {
+      month: "short", day: "numeric", year: "numeric"
+    }) : "";
+    const text = escapeHtml(r.content || "");
+    const displayName = escapeHtml(m.display_name || "");
+    const username = escapeHtml(m.username || "");
+    const url = escapeHtml(m.url || "");
+
+    const likes = fmtNum(m.likes_count);
+    const rts = fmtNum(m.retweets_count);
+    const replies = fmtNum(m.replies_count);
+    const mediaBadge = m.has_media ? `<span class="badge">${escapeHtml(m.media_type || "media")}</span>` : "";
+
+    return `<div class="card">
+      <div class="card-header">
+        <span class="card-user">${displayName} <span class="card-username">@${username}</span></span>
+        <span class="card-time">${date}</span>
+      </div>
+      <div class="card-text">${text}</div>
+      <div class="card-footer">
+        <span class="stat">${replies} replies</span>
+        <span class="stat">${rts} retweets</span>
+        <span class="stat">${likes} likes</span>
+        ${mediaBadge}
+        <span class="card-link">${url ? `<a href="${url}" target="_blank" rel="noopener">View tweet</a>` : ""}</span>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+function escapeHtml(s) {
+  const el = document.createElement("span");
+  el.textContent = s;
+  return el.innerHTML;
+}
+
+function fmtNum(n) {
+  if (n == null) return "0";
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + "M";
+  if (n >= 1000) return (n / 1000).toFixed(1) + "K";
+  return String(n);
+}
+</script>
+</body>
+</html>
