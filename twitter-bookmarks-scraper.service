@@ -1,0 +1,10 @@
+[Unit]
+Description=Twitter Bookmarks Scraper + Retriever Upload
+
+[Service]
+Type=oneshot
+ExecStart=/run/media/andrew/spinny_boi/coding/twitter_scrapers/run_daily.sh
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:/home/andrew/.local/bin
+
+[Install]
+WantedBy=default.target

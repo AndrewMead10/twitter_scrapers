@@ -2,3 +2,6 @@ output_data
 .uv_cache
 
 .env
+__pycache__
+
+worktree
