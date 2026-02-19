@@ -130,6 +130,43 @@
 
   .card-link a:hover { text-decoration: underline; }
 
+  .thread-group {
+    border-left: 3px solid #1d9bf0;
+    padding-left: 0;
+    margin-bottom: 0.75rem;
+    border-radius: 12px;
+    overflow: hidden;
+  }
+
+  .thread-group .card {
+    border-radius: 0;
+    border-left: none;
+    border-bottom: 1px solid #2f3336;
+  }
+
+  .thread-group .card:first-child { border-radius: 12px 12px 0 0; }
+  .thread-group .card:last-child { border-radius: 0 0 12px 12px; border-bottom: none; }
+  .thread-group .card:only-child { border-radius: 12px; }
+
+  .thread-group .card.context-tweet {
+    opacity: 0.55;
+  }
+
+  .thread-group .card.matched-tweet {
+    opacity: 1;
+    background: #1a2735;
+    border-left: none;
+  }
+
+  .thread-label {
+    font-size: 0.75rem;
+    color: #1d9bf0;
+    padding: 0.4rem 1rem;
+    background: #16181c;
+    border-bottom: 1px solid #2f3336;
+    font-weight: 600;
+  }
+
   @media (max-width: 480px) {
     body { padding: 1rem 0.5rem; }
     h1 { font-size: 1.25rem; }
@@ -159,6 +196,23 @@ const statusEl = document.getElementById("status");
 const resultsEl = document.getElementById("results");
 
 let debounceTimer = null;
+
+// Thread data: tweetId -> conversationId, and conversationId -> [tweets]
+let threadIndex = {};      // conv_id -> [{tweet_id, text, ...}, ...]
+let tweetToConv = {};      // tweet_id -> conv_id
+
+// Load thread index on startup
+fetch("../output_data/thread_index.json")
+  .then(r => r.ok ? r.json() : {})
+  .then(data => {
+    threadIndex = data;
+    for (const [convId, tweets] of Object.entries(data)) {
+      for (const t of tweets) {
+        tweetToConv[t.tweet_id] = convId;
+      }
+    }
+  })
+  .catch(() => {});
 
 searchInput.addEventListener("input", () => {
   clearTimeout(debounceTimer);
@@ -199,6 +253,35 @@ async function doSearch(query) {
   }
 }
 
+function renderTweetCard(tweet, extraClass) {
+  const date = tweet.timestamp ? new Date(tweet.timestamp).toLocaleDateString("en-US", {
+    month: "short", day: "numeric", year: "numeric"
+  }) : "";
+  const text = escapeHtml(tweet.text || "");
+  const displayName = escapeHtml(tweet.display_name || "");
+  const username = escapeHtml(tweet.user_id || "");
+  const url = escapeHtml(tweet.url || "");
+  const likes = fmtNum(tweet.likes_count);
+  const rts = fmtNum(tweet.retweets_count);
+  const replies = fmtNum(tweet.replies_count);
+  const mediaBadge = tweet.has_media ? `<span class="badge">${escapeHtml(tweet.media_type || "media")}</span>` : "";
+
+  return `<div class="card ${extraClass}">
+    <div class="card-header">
+      <span class="card-user">${displayName || username} <span class="card-username">@${username}</span></span>
+      <span class="card-time">${date}</span>
+    </div>
+    <div class="card-text">${text}</div>
+    <div class="card-footer">
+      <span class="stat">${replies} replies</span>
+      <span class="stat">${rts} retweets</span>
+      <span class="stat">${likes} likes</span>
+      ${mediaBadge}
+      <span class="card-link">${url ? `<a href="${url}" target="_blank" rel="noopener">View tweet</a>` : ""}</span>
+    </div>
+  </div>`;
+}
+
 function renderResults(results) {
   if (!results.length) {
     statusEl.style.display = "";
@@ -208,35 +291,51 @@ function renderResults(results) {
   }
 
   statusEl.style.display = "none";
+
+  // Track which conversations we've already rendered to avoid duplicates
+  const renderedConvs = new Set();
+
   resultsEl.innerHTML = results.map(r => {
     const m = r.metadata || {};
-    const date = m.timestamp ? new Date(m.timestamp).toLocaleDateString("en-US", {
-      month: "short", day: "numeric", year: "numeric"
-    }) : "";
-    const text = escapeHtml(r.content || "");
-    const displayName = escapeHtml(m.display_name || "");
-    const username = escapeHtml(m.username || "");
-    const url = escapeHtml(m.url || "");
+    // Try to extract tweet_id from the URL in metadata
+    let tweetId = "";
+    if (m.url) {
+      const match = m.url.match(/\/status\/(\d+)/);
+      if (match) tweetId = match[1];
+    }
 
-    const likes = fmtNum(m.likes_count);
-    const rts = fmtNum(m.retweets_count);
-    const replies = fmtNum(m.replies_count);
-    const mediaBadge = m.has_media ? `<span class="badge">${escapeHtml(m.media_type || "media")}</span>` : "";
+    const convId = tweetToConv[tweetId];
+    const thread = convId ? threadIndex[convId] : null;
 
-    return `<div class="card">
-      <div class="card-header">
-        <span class="card-user">${displayName} <span class="card-username">@${username}</span></span>
-        <span class="card-time">${date}</span>
-      </div>
-      <div class="card-text">${text}</div>
-      <div class="card-footer">
-        <span class="stat">${replies} replies</span>
-        <span class="stat">${rts} retweets</span>
-        <span class="stat">${likes} likes</span>
-        ${mediaBadge}
-        <span class="card-link">${url ? `<a href="${url}" target="_blank" rel="noopener">View tweet</a>` : ""}</span>
-      </div>
-    </div>`;
+    // If this tweet is part of a multi-tweet thread, render the whole thread
+    if (thread && thread.length > 1) {
+      if (renderedConvs.has(convId)) return "";
+      renderedConvs.add(convId);
+
+      const threadCards = thread.map(t => {
+        const cls = t.tweet_id === tweetId ? "matched-tweet" : "context-tweet";
+        return renderTweetCard(t, cls);
+      }).join("");
+
+      return `<div class="thread-group">
+        <div class="thread-label">Thread (${thread.length} tweets)</div>
+        ${threadCards}
+      </div>`;
+    }
+
+    // Single tweet (no thread context)
+    return renderTweetCard({
+      text: r.content,
+      display_name: m.display_name,
+      user_id: m.username,
+      url: m.url,
+      timestamp: m.timestamp,
+      likes_count: m.likes_count,
+      retweets_count: m.retweets_count,
+      replies_count: m.replies_count,
+      has_media: m.has_media,
+      media_type: m.media_type,
+    }, "");
   }).join("");
 }
 

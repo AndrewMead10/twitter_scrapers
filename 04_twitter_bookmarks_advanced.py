@@ -21,6 +21,7 @@ import time
 import random
 import sqlite3
 import ssl
+import subprocess
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional
@@ -381,26 +382,16 @@ class TwitterBookmarksScraper:
         self.seen_ids = set()
     
     def setup_driver(self):
-        """Setup Chrome driver"""
-        options = uc.ChromeOptions()
-        options.add_argument('--start-maximized')
-        options.add_argument('--no-sandbox')
-        options.add_argument('--disable-dev-shm-usage')
-        options.add_argument('--disable-gpu')
+        """Setup Chrome driver with automatic version detection"""
+        def make_options():
+            opts = uc.ChromeOptions()
+            opts.add_argument('--start-maximized')
+            opts.add_argument('--no-sandbox')
+            opts.add_argument('--disable-dev-shm-usage')
+            opts.add_argument('--disable-gpu')
+            return opts
 
-        # Try to detect Chrome version or use a compatible version
-        try:
-            self.driver = uc.Chrome(options=options, version_main=140)  # Match your Chrome version
-        except Exception as e:
-            Logger.warning(f"Failed with version 129: {e}")
-            try:
-                # Fallback to automatic version detection
-                self.driver = uc.Chrome(options=options, version_main=None)
-            except Exception as e2:
-                Logger.warning(f"Failed with auto detection: {e2}")
-                # Last resort - try without version specification
-                self.driver = uc.Chrome(options=options)
-
+        self.driver = uc.Chrome(options=make_options())
         return self.driver
 
     def _prime_bookmarks_feed(self):
@@ -524,22 +515,24 @@ class TwitterBookmarksScraper:
             # Export
             if self.bookmarks:
                 self.export_results()
-                
+
                 # Stats
                 cursor = self.db.conn.cursor()
                 cursor.execute("SELECT COUNT(*) FROM tweets")
                 total_tweets = cursor.fetchone()[0]
-                
+
                 print("\n" + "="*60)
-                print("🎉 SUCCESS!")
+                print("SUCCESS!")
                 print("="*60)
-                print(f"📑 Bookmarks: {len(self.bookmarks)}")
-                print(f"📊 Total tweets in DB: {total_tweets}")
-                print(f"📁 Output: {self.output_dir}")
+                print(f"Bookmarks: {len(self.bookmarks)}")
+                print(f"Total tweets in DB: {total_tweets}")
+                print(f"Output: {self.output_dir}")
                 print("="*60)
-            
-            if sys.stdin.isatty():
-                input("\nPress Enter to close...")
+
+                # Chain to thread retriever
+                script_dir = Path(__file__).parent
+                Logger.info("Running thread & image retriever...")
+                subprocess.run([sys.executable, str(script_dir / "05_thread_image_retriever.py")])
             
         except KeyboardInterrupt:
             Logger.warning("Interrupted by user")
