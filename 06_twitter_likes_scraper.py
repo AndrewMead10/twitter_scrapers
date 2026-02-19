@@ -480,6 +480,12 @@ class DatabaseManager:
         rows = cursor.fetchall()
         return [dict(row) for row in rows]
     
+    def get_existing_like_ids(self) -> set:
+        """Get all tweet IDs that are already liked in the database"""
+        cursor = self.conn.cursor()
+        cursor.execute('SELECT tweet_id FROM likes')
+        return {row['tweet_id'] for row in cursor.fetchall()}
+
     def close(self):
         if self.conn:
             self.conn.close()
@@ -637,8 +643,14 @@ class TwitterLikesScraper:
                 Logger.error(f"Fallback navigation failed: {inner}")
                 return False
     
-    def scrape_likes(self, max_scrolls: int = 1000) -> List[Dict[str, Any]]:
-        """Scrape all liked tweets"""
+    def scrape_likes(self, max_scrolls: int = 1000,
+                     existing_threshold: int = 5) -> List[Dict[str, Any]]:
+        """Scrape all liked tweets
+
+        Args:
+            max_scrolls: Maximum number of viewport scrolls
+            existing_threshold: Number of consecutive existing tweets before stopping
+        """
         Logger.info("Starting likes extraction...")
 
         if not self._navigate_to_likes_page():
@@ -650,6 +662,12 @@ class TwitterLikesScraper:
             Logger.error(f"Not on likes page! Current URL: {current_url}")
             Logger.warning("Make sure your profile is accessible and credentials are valid")
             return self.likes
+
+        # Load existing likes from database to detect when to stop
+        existing_ids = self.db.get_existing_like_ids()
+        if existing_ids:
+            Logger.info(f"Found {len(existing_ids)} existing likes in database")
+        consecutive_existing = 0
 
         self._prime_likes_feed()
 
@@ -668,6 +686,19 @@ class TwitterLikesScraper:
                     parsed = self.parser.parse(elem)
                     if not parsed or parsed['tweet_id'] in self.seen_ids:
                         continue
+
+                    # Check if this tweet is already in the database
+                    if parsed['tweet_id'] in existing_ids:
+                        consecutive_existing += 1
+                        Logger.info(f"Found existing like ({consecutive_existing}/{existing_threshold}): {parsed['tweet_id']}")
+                        self.seen_ids.add(parsed['tweet_id'])  # Don't re-process
+                        if consecutive_existing >= existing_threshold:
+                            Logger.success(f"Reached {existing_threshold} consecutive existing likes - stopping to avoid redundant work")
+                            return self.likes
+                        continue
+
+                    # Reset counter when we find a new like
+                    consecutive_existing = 0
 
                     self.seen_ids.add(parsed['tweet_id'])
                     self.likes.append(parsed)
